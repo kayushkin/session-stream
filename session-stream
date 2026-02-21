@@ -1,0 +1,318 @@
+#!/usr/bin/env python3 -u
+"""Stream OpenClaw session logs in a readable format.
+
+Usage:
+  session-stream                        # latest session for default agent (main)
+  session-stream --agent argraphments   # latest session for a specific agent
+  session-stream --list                 # list available agents
+  session-stream --list --agent work    # list sessions for an agent
+  session-stream <path>.jsonl           # stream a specific file
+  session-stream --no-follow            # dump and exit (no tail)
+  session-stream -n 50                  # show last N messages instead of default 20
+"""
+
+import argparse
+import json
+import sys
+import time
+import os
+import glob
+
+# --- Colors ---
+
+CYAN = "\033[36m"
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
+RED = "\033[31m"
+DIM = "\033[2m"
+BOLD = "\033[1m"
+RESET = "\033[0m"
+MAGENTA = "\033[35m"
+BLUE = "\033[34m"
+
+# --- Config ---
+
+STATE_DIR = os.environ.get("OPENCLAW_STATE_DIR", os.path.expanduser("~/.openclaw"))
+AGENTS_DIR = os.path.join(STATE_DIR, "agents")
+DEFAULT_AGENT = "main"
+DEFAULT_TAIL = 20
+
+
+def get_agents():
+    """List all agents that have session directories."""
+    if not os.path.isdir(AGENTS_DIR):
+        return []
+    agents = []
+    for name in sorted(os.listdir(AGENTS_DIR)):
+        sessions_dir = os.path.join(AGENTS_DIR, name, "sessions")
+        if os.path.isdir(sessions_dir):
+            count = len(glob.glob(os.path.join(sessions_dir, "*.jsonl")))
+            agents.append((name, count))
+    return agents
+
+
+def get_sessions(agent):
+    """List session files for an agent, newest first."""
+    pattern = os.path.join(AGENTS_DIR, agent, "sessions", "*.jsonl")
+    files = glob.glob(pattern)
+    return sorted(files, key=os.path.getmtime, reverse=True)
+
+
+def find_latest_session(agent):
+    """Find the most recently modified session file for an agent."""
+    sessions = get_sessions(agent)
+    if not sessions:
+        print(f"{RED}No session files found for agent '{agent}'{RESET}")
+        print(f"{DIM}Looked in: {AGENTS_DIR}/{agent}/sessions/*.jsonl{RESET}")
+        available = get_agents()
+        if available:
+            print(f"\nAvailable agents: {', '.join(a for a, _ in available)}")
+        sys.exit(1)
+    return sessions[0]
+
+
+# --- Content extraction ---
+
+def extract_text(content):
+    """Extract text from content (string or array of content blocks)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict):
+                if block.get("type") == "text":
+                    parts.append(block.get("text", ""))
+            elif isinstance(block, str):
+                parts.append(block)
+        return "\n".join(parts)
+    return str(content) if content else ""
+
+
+def extract_tool_calls(content):
+    """Extract tool calls from content array."""
+    calls = []
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "toolCall":
+                name = block.get("name", "?")
+                args = block.get("arguments", {})
+                if isinstance(args, dict):
+                    summary = []
+                    for k, v in args.items():
+                        v_str = str(v)
+                        if len(v_str) > 80:
+                            v_str = v_str[:77] + "…"
+                        summary.append(f"{k}={v_str}")
+                    args_str = ", ".join(summary)
+                else:
+                    args_str = str(args)[:150]
+                calls.append(f"  {MAGENTA}⚡ {name}{RESET}({DIM}{args_str}{RESET})")
+    return calls
+
+
+def extract_tool_results(content):
+    """Extract tool results from content array."""
+    results = []
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "toolResult":
+                text = block.get("text", "") or block.get("content", "")
+                if isinstance(text, list):
+                    text = " ".join(
+                        t.get("text", "") for t in text if isinstance(t, dict)
+                    )
+                text = str(text)
+                if len(text) > 300:
+                    text = text[:297] + "…"
+                if text.strip():
+                    results.append(f"  {DIM}→ {text}{RESET}")
+    return results
+
+
+# --- Formatting ---
+
+def format_timestamp(entry):
+    """Extract and format timestamp if available."""
+    ts = entry.get("ts") or entry.get("timestamp")
+    if not ts:
+        return ""
+    try:
+        if isinstance(ts, (int, float)):
+            # epoch ms or seconds
+            if ts > 1e12:
+                ts = ts / 1000
+            dt = time.localtime(ts)
+        else:
+            return f" {DIM}{ts}{RESET}"
+        return f" {DIM}{time.strftime('%H:%M:%S', dt)}{RESET}"
+    except Exception:
+        return ""
+
+
+def process_line(line):
+    """Process a single JSONL line into formatted output."""
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        entry = json.loads(line)
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+    msg = entry.get("message", {})
+    if not msg:
+        return None
+
+    role = msg.get("role", "")
+    content = msg.get("content", "")
+    ts = format_timestamp(entry)
+
+    if role == "user":
+        text = extract_text(content)
+        if text and not text.startswith("Read HEARTBEAT"):
+            if len(text) > 500:
+                text = text[:200] + f"\n  {DIM}… ({len(text)} chars){RESET}"
+            return f"\n{CYAN}{BOLD}━━━ You{ts} ━━━{RESET}\n{CYAN}{text}{RESET}"
+
+    elif role == "assistant":
+        parts = []
+        text = extract_text(content)
+        if text.strip():
+            parts.append(f"\n{GREEN}{BOLD}━━━ Agent{ts} ━━━{RESET}\n{GREEN}{text}{RESET}")
+        tool_calls = extract_tool_calls(content)
+        if tool_calls:
+            if not parts:
+                parts.append(f"\n{GREEN}{BOLD}━━━ Agent{ts} ━━━{RESET}")
+            parts.extend(tool_calls)
+        return "\n".join(parts) if parts else None
+
+    elif role == "tool":
+        results = extract_tool_results(content)
+        if results:
+            return "\n".join(results)
+        text = extract_text(content)
+        if text.strip():
+            if len(text) > 300:
+                text = text[:297] + "…"
+            return f"  {DIM}→ {text}{RESET}"
+
+    elif role == "system":
+        text = extract_text(content)
+        if text.strip():
+            if len(text) > 200:
+                text = text[:197] + "…"
+            return f"\n{BLUE}{DIM}[system]{ts} {text}{RESET}"
+
+    return None
+
+
+# --- Streaming ---
+
+def stream(filepath, follow=True, tail=DEFAULT_TAIL):
+    """Stream a session file with optional follow mode."""
+    basename = os.path.basename(filepath)
+    # Try to extract agent name from path
+    parts = filepath.split(os.sep)
+    agent_name = ""
+    for i, p in enumerate(parts):
+        if p == "agents" and i + 1 < len(parts):
+            agent_name = f" ({parts[i + 1]})"
+            break
+
+    print(f"{YELLOW}Streaming: {basename}{agent_name}{RESET}", flush=True)
+    print(f"{DIM}{'─' * 60}{RESET}\n", flush=True)
+
+    with open(filepath, "r") as f:
+        lines = f.readlines()
+        start = max(0, len(lines) - tail) if follow else 0
+
+        for line in lines[start:]:
+            output = process_line(line)
+            if output:
+                print(output, flush=True)
+
+        if not follow:
+            return
+
+        while True:
+            line = f.readline()
+            if line:
+                output = process_line(line)
+                if output:
+                    print(output, flush=True)
+            else:
+                time.sleep(0.3)
+
+
+# --- List mode ---
+
+def list_agents():
+    """Print available agents and session counts."""
+    agents = get_agents()
+    if not agents:
+        print(f"{RED}No agents found in {AGENTS_DIR}{RESET}")
+        sys.exit(1)
+    print(f"{BOLD}Agents:{RESET}\n")
+    for name, count in agents:
+        print(f"  {CYAN}{name}{RESET}  {DIM}({count} sessions){RESET}")
+
+
+def list_sessions(agent):
+    """Print sessions for an agent."""
+    sessions = get_sessions(agent)
+    if not sessions:
+        print(f"{RED}No sessions for agent '{agent}'{RESET}")
+        sys.exit(1)
+    print(f"{BOLD}Sessions for {CYAN}{agent}{RESET}{BOLD}:{RESET}\n")
+    for path in sessions[:20]:
+        basename = os.path.basename(path)
+        size = os.path.getsize(path)
+        mtime = time.strftime("%Y-%m-%d %H:%M", time.localtime(os.path.getmtime(path)))
+        size_str = f"{size / 1024:.0f}K" if size < 1024 * 1024 else f"{size / (1024*1024):.1f}M"
+        print(f"  {DIM}{mtime}{RESET}  {size_str:>6}  {basename}")
+
+
+# --- Main ---
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Stream OpenClaw session logs",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    parser.add_argument("file", nargs="?", help="Session JSONL file to stream")
+    parser.add_argument(
+        "--agent", "-a", default=DEFAULT_AGENT, help="Agent id (default: main)"
+    )
+    parser.add_argument("--list", "-l", action="store_true", help="List agents or sessions")
+    parser.add_argument("--no-follow", action="store_true", help="Dump and exit")
+    parser.add_argument(
+        "-n", type=int, default=DEFAULT_TAIL, help=f"Number of recent messages to show (default: {DEFAULT_TAIL})"
+    )
+
+    args = parser.parse_args()
+
+    if args.list:
+        if args.agent != DEFAULT_AGENT:
+            list_sessions(args.agent)
+        else:
+            list_agents()
+        return
+
+    if args.file:
+        filepath = args.file
+        if not os.path.isfile(filepath):
+            print(f"{RED}File not found: {filepath}{RESET}")
+            sys.exit(1)
+    else:
+        filepath = find_latest_session(args.agent)
+
+    try:
+        stream(filepath, follow=not args.no_follow, tail=args.n)
+    except KeyboardInterrupt:
+        print(f"\n{DIM}Stream ended.{RESET}")
+
+
+if __name__ == "__main__":
+    main()
