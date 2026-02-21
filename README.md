@@ -5,13 +5,14 @@ A terminal viewer for [OpenClaw](https://github.com/openclaw/openclaw) session l
 ## Install
 
 ```bash
-# Clone and symlink
+# Clone and build
 git clone https://github.com/kayushkin/session-stream
-ln -sf "$(pwd)/session-stream/session-stream" ~/bin/session-stream
-chmod +x session-stream/session-stream
+cd session-stream
+go build
+ln -sf "$(pwd)/session-stream" ~/bin/session-stream
 ```
 
-No dependencies beyond Python 3.
+Requires Go 1.16 or later. No external dependencies.
 
 ## Usage
 

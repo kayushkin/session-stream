@@ -22,9 +22,16 @@ Tails OpenClaw JSONL session files with color-coded output:
 
 Single file script. Keep it that way — no frameworks, no deps, just Python stdlib.
 
+## Roadmap
+
+- Per-agent token usage tracking and display
+- Cross-agent session status monitoring
+- Unified dashboard for all running agents
+- Eventually the primary interface for monitoring and interacting with all agents
+
 ## Your Job
 
-- Keep the script lean and portable
+- Keep the tool lean and portable
 - Test changes manually: `./session-stream --list`, `./session-stream -a main`
 - Update README.md if CLI interface changes
 - Log decisions in `memory/YYYY-MM-DD.md`
