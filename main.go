@@ -435,6 +435,7 @@ func streamFile(filepath string, follow bool, tail int) {
 
 	// Read all existing lines
 	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024) // up to 10MB per line
 	var lines []string
 	for scanner.Scan() {
 		lines = append(lines, scanner.Text())
@@ -502,6 +503,7 @@ func streamFile(filepath string, follow bool, tail int) {
 
 func readLine(r io.Reader) (string, error) {
 	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
 	if scanner.Scan() {
 		return scanner.Text(), nil
 	}
