@@ -272,10 +272,10 @@ func formatNumber(n int) string {
 }
 
 func formatTokenUsage(usage *Usage) string {
-	if usage == nil || usage.Input == 0 && usage.Output == 0 {
+	if usage == nil || usage.TotalTokens == 0 && usage.Output == 0 {
 		return ""
 	}
-	return fmt.Sprintf(" %stokens: %s in / %s out%s", dim, formatNumber(usage.Input), formatNumber(usage.Output), reset)
+	return fmt.Sprintf(" %sctx: %s | out: %d%s", dim, formatNumber(usage.TotalTokens), usage.Output, reset)
 }
 
 func formatTimestamp(entry *LogEntry) string {
@@ -421,7 +421,7 @@ func streamFile(filepath string, follow bool, tail int) {
 	}
 
 	// Track token usage
-	var totalInput, totalOutput int
+	var totalContext, totalOutput int
 
 	// Print tail
 	start := 0
@@ -434,16 +434,16 @@ func streamFile(filepath string, follow bool, tail int) {
 			fmt.Println(result.Output)
 		}
 		if result.Usage != nil {
-			totalInput += result.Usage.Input
+			totalContext += result.Usage.TotalTokens
 			totalOutput += result.Usage.Output
 		}
 	}
 
 	if !follow {
 		// Show total when dumping
-		if totalInput > 0 || totalOutput > 0 {
+		if totalContext > 0 || totalOutput > 0 {
 			fmt.Printf("\n%s%s%s\n", dim, strings.Repeat("─", 60), reset)
-			fmt.Printf("%sTotal tokens: %s in / %s out%s\n", dim, formatNumber(totalInput), formatNumber(totalOutput), reset)
+			fmt.Printf("%sTotal: ctx: %s | out: %s%s\n", dim, formatNumber(totalContext), formatNumber(totalOutput), reset)
 		}
 		return
 	}
@@ -463,7 +463,7 @@ func streamFile(filepath string, follow bool, tail int) {
 			fmt.Println(result.Output)
 		}
 		if result.Usage != nil {
-			totalInput += result.Usage.Input
+			totalContext += result.Usage.TotalTokens
 			totalOutput += result.Usage.Output
 		}
 	}
