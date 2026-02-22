@@ -35,3 +35,11 @@ Single file script. Keep it that way — no frameworks, no deps, just Python std
 - Test changes manually: `./session-stream --list`, `./session-stream -a main`
 - Update README.md if CLI interface changes
 - Log decisions in `memory/YYYY-MM-DD.md`
+
+## IMPORTANT: After Every Task
+
+1. `go build -o session-stream .` — rebuild the binary
+2. `go test ./...` — run all tests
+3. `git add -A && git commit -m "<descriptive message>"` — commit changes
+4. `git push` — push to remote
+5. Verify the push succeeded before reporting done
