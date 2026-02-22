@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -349,5 +350,178 @@ func TestProcessLineExtractsCost(t *testing.T) {
 
 	if result.Usage.Cost.Total != 0.4834 {
 		t.Errorf("Expected cost.total=0.4834, got %f", result.Usage.Cost.Total)
+	}
+}
+
+func TestExtractToolCalls(t *testing.T) {
+	tests := []struct {
+		name     string
+		content  interface{}
+		expected int
+	}{
+		{
+			name:     "no tool calls",
+			content:  "plain text",
+			expected: 0,
+		},
+		{
+			name: "single tool call",
+			content: []interface{}{
+				map[string]interface{}{
+					"type": "toolCall",
+					"name": "exec",
+					"arguments": map[string]interface{}{
+						"command": "ls -la",
+					},
+				},
+			},
+			expected: 1,
+		},
+		{
+			name: "multiple tool calls",
+			content: []interface{}{
+				map[string]interface{}{
+					"type": "toolCall",
+					"name": "read",
+					"arguments": map[string]interface{}{
+						"file_path": "/home/user/test.txt",
+					},
+				},
+				map[string]interface{}{
+					"type": "toolCall",
+					"name": "exec",
+					"arguments": map[string]interface{}{
+						"command": "pwd",
+					},
+				},
+			},
+			expected: 2,
+		},
+		{
+			name: "mixed content with tool call",
+			content: []interface{}{
+				map[string]interface{}{
+					"type": "text",
+					"text": "Let me check that",
+				},
+				map[string]interface{}{
+					"type": "toolCall",
+					"name": "read",
+					"arguments": map[string]interface{}{
+						"file_path": "/home/user/test.txt",
+					},
+				},
+			},
+			expected: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := extractToolCalls(tt.content)
+			if len(calls) != tt.expected {
+				t.Errorf("Expected %d tool calls, got %d", tt.expected, len(calls))
+			}
+		})
+	}
+}
+
+func TestExtractToolResults(t *testing.T) {
+	tests := []struct {
+		name     string
+		content  interface{}
+		expected int
+	}{
+		{
+			name:     "no tool results",
+			content:  "plain text",
+			expected: 0,
+		},
+		{
+			name: "single tool result",
+			content: []interface{}{
+				map[string]interface{}{
+					"type": "toolResult",
+					"text": "Command executed successfully",
+				},
+			},
+			expected: 1,
+		},
+		{
+			name: "tool result with nested content",
+			content: []interface{}{
+				map[string]interface{}{
+					"type": "toolResult",
+					"content": []interface{}{
+						map[string]interface{}{
+							"text": "File contents here",
+						},
+					},
+				},
+			},
+			expected: 1,
+		},
+		{
+			name: "long tool result gets truncated",
+			content: []interface{}{
+				map[string]interface{}{
+					"type": "toolResult",
+					"text": strings.Repeat("a", 400),
+				},
+			},
+			expected: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			results := extractToolResults(tt.content)
+			if len(results) != tt.expected {
+				t.Errorf("Expected %d tool results, got %d", tt.expected, len(results))
+			}
+			// Verify truncation for long results
+			if tt.name == "long tool result gets truncated" && len(results) > 0 {
+				// Results include ANSI codes and prefix, but the text portion should be truncated
+				if !strings.Contains(results[0], "…") {
+					t.Error("Expected long result to be truncated with ellipsis")
+				}
+			}
+		})
+	}
+}
+
+func TestProcessLineWithToolCalls(t *testing.T) {
+	jsonl := `{"message":{"role":"assistant","content":[{"type":"text","text":"Let me check that"},{"type":"toolCall","name":"exec","arguments":{"command":"ls -la"}}]}}`
+	
+	result := processLine(jsonl)
+	
+	if result.Output == "" {
+		t.Fatal("Expected output for assistant message with tool call")
+	}
+	
+	if !strings.Contains(result.Output, "exec") {
+		t.Error("Expected output to contain tool call name")
+	}
+	
+	if !strings.Contains(result.Output, "⚡") {
+		t.Error("Expected output to contain lightning bolt symbol")
+	}
+}
+
+func TestProcessLineWithToolResults(t *testing.T) {
+	jsonl := `{"message":{"role":"tool","content":[{"type":"toolResult","text":"total 24\ndrwxr-xr-x 3 user user 4096"}]}}`
+	
+	result := processLine(jsonl)
+	
+	if result.Output == "" {
+		t.Fatal("Expected output for tool message with result")
+	}
+	
+	if !strings.Contains(result.Output, "→") {
+		t.Error("Expected output to contain arrow symbol")
+	}
+	
+	if !strings.Contains(result.Output, "total 24") {
+		t.Error("Expected output to contain result text")
 	}
 }
