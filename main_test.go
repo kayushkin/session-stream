@@ -525,3 +525,91 @@ func TestProcessLineWithToolResults(t *testing.T) {
 		t.Error("Expected output to contain result text")
 	}
 }
+
+func TestProcessLineLargeJSONL(t *testing.T) {
+	// Test that we can handle JSONL lines larger than 64KB
+	// (the old bufio.Scanner default limit that was silently truncating)
+	
+	// Create a large content string (100KB to exceed the old 64KB limit)
+	largeContent := strings.Repeat("This is a large tool result content. ", 100*1024/40) // ~100KB
+	
+	// Build a JSONL entry with the large content
+	entry := map[string]interface{}{
+		"message": map[string]interface{}{
+			"role": "tool",
+			"content": []interface{}{
+				map[string]interface{}{
+					"type": "toolResult",
+					"text": largeContent,
+				},
+			},
+		},
+	}
+	
+	jsonlBytes, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatalf("Failed to marshal large entry: %v", err)
+	}
+	
+	jsonl := string(jsonlBytes)
+	
+	// Verify the JSONL is actually larger than 64KB
+	if len(jsonl) <= 64*1024 {
+		t.Fatalf("Test JSONL is only %d bytes, expected > 64KB", len(jsonl))
+	}
+	
+	// Process the line - this should not panic or truncate
+	result := processLine(jsonl)
+	
+	if result.Output == "" {
+		t.Fatal("Expected output for large tool result, got empty string")
+	}
+	
+	// Verify the message was parsed correctly (should contain tool result marker)
+	if !strings.Contains(result.Output, "→") {
+		t.Error("Expected output to contain tool result arrow symbol")
+	}
+	
+	// Now test with an assistant message with large content
+	largeAssistantContent := strings.Repeat("A", 100*1024) // 100KB of 'A's
+	
+	assistantEntry := map[string]interface{}{
+		"message": map[string]interface{}{
+			"role":    "assistant",
+			"content": largeAssistantContent,
+			"usage": map[string]interface{}{
+				"input":       1000,
+				"output":      500,
+				"totalTokens": 50000,
+			},
+		},
+	}
+	
+	assistantJsonlBytes, err := json.Marshal(assistantEntry)
+	if err != nil {
+		t.Fatalf("Failed to marshal large assistant entry: %v", err)
+	}
+	
+	assistantJsonl := string(assistantJsonlBytes)
+	
+	// Verify this is also > 64KB
+	if len(assistantJsonl) <= 64*1024 {
+		t.Fatalf("Test assistant JSONL is only %d bytes, expected > 64KB", len(assistantJsonl))
+	}
+	
+	// Process the large assistant message
+	assistantResult := processLine(assistantJsonl)
+	
+	if assistantResult.Output == "" {
+		t.Fatal("Expected output for large assistant message, got empty string")
+	}
+	
+	// Verify usage was extracted correctly even from large message
+	if assistantResult.Usage == nil {
+		t.Fatal("Expected usage data to be extracted from large assistant message")
+	}
+	
+	if assistantResult.Usage.TotalTokens != 50000 {
+		t.Errorf("Expected totalTokens=50000, got %d", assistantResult.Usage.TotalTokens)
+	}
+}
