@@ -32,12 +32,21 @@ const (
 )
 
 // Message structures
+type Cost struct {
+	Input      float64 `json:"input"`
+	Output     float64 `json:"output"`
+	CacheRead  float64 `json:"cacheRead"`
+	CacheWrite float64 `json:"cacheWrite"`
+	Total      float64 `json:"total"`
+}
+
 type Usage struct {
-	Input       int `json:"input"`
-	Output      int `json:"output"`
-	CacheRead   int `json:"cacheRead"`
-	CacheWrite  int `json:"cacheWrite"`
-	TotalTokens int `json:"totalTokens"`
+	Input       int   `json:"input"`
+	Output      int   `json:"output"`
+	CacheRead   int   `json:"cacheRead"`
+	CacheWrite  int   `json:"cacheWrite"`
+	TotalTokens int   `json:"totalTokens"`
+	Cost        *Cost `json:"cost"`
 }
 
 type Message struct {
@@ -271,11 +280,22 @@ func formatNumber(n int) string {
 	return fmt.Sprintf("%d", n)
 }
 
+func formatCost(cost float64) string {
+	if cost < 0.01 {
+		return fmt.Sprintf("$%.2f", cost)
+	}
+	return fmt.Sprintf("$%.2f", cost)
+}
+
 func formatTokenUsage(usage *Usage) string {
 	if usage == nil || usage.TotalTokens == 0 && usage.Output == 0 {
 		return ""
 	}
-	return fmt.Sprintf(" %sctx: %s | out: %d%s", dim, formatNumber(usage.TotalTokens), usage.Output, reset)
+	costStr := ""
+	if usage.Cost != nil && usage.Cost.Total > 0 {
+		costStr = fmt.Sprintf(" | %s", formatCost(usage.Cost.Total))
+	}
+	return fmt.Sprintf(" %sctx: %s | out: %d%s%s", dim, formatNumber(usage.TotalTokens), usage.Output, costStr, reset)
 }
 
 func formatTimestamp(entry *LogEntry) string {
@@ -420,8 +440,9 @@ func streamFile(filepath string, follow bool, tail int) {
 		lines = append(lines, scanner.Text())
 	}
 
-	// Track token usage
+	// Track token usage and cost
 	var totalContext, totalOutput int
+	var totalCost float64
 
 	// Print tail
 	start := 0
@@ -436,6 +457,9 @@ func streamFile(filepath string, follow bool, tail int) {
 		if result.Usage != nil {
 			totalContext += result.Usage.TotalTokens
 			totalOutput += result.Usage.Output
+			if result.Usage.Cost != nil {
+				totalCost += result.Usage.Cost.Total
+			}
 		}
 	}
 
@@ -443,7 +467,11 @@ func streamFile(filepath string, follow bool, tail int) {
 		// Show total when dumping
 		if totalContext > 0 || totalOutput > 0 {
 			fmt.Printf("\n%s%s%s\n", dim, strings.Repeat("─", 60), reset)
-			fmt.Printf("%sTotal: ctx: %s | out: %s%s\n", dim, formatNumber(totalContext), formatNumber(totalOutput), reset)
+			costStr := ""
+			if totalCost > 0 {
+				costStr = fmt.Sprintf(" | %s", formatCost(totalCost))
+			}
+			fmt.Printf("%sTotal: ctx: %s | out: %s%s%s\n", dim, formatNumber(totalContext), formatNumber(totalOutput), costStr, reset)
 		}
 		return
 	}
@@ -465,6 +493,9 @@ func streamFile(filepath string, follow bool, tail int) {
 		if result.Usage != nil {
 			totalContext += result.Usage.TotalTokens
 			totalOutput += result.Usage.Output
+			if result.Usage.Cost != nil {
+				totalCost += result.Usage.Cost.Total
+			}
 		}
 	}
 }
