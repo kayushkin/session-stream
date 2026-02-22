@@ -32,9 +32,18 @@ const (
 )
 
 // Message structures
+type Usage struct {
+	Input       int `json:"input"`
+	Output      int `json:"output"`
+	CacheRead   int `json:"cacheRead"`
+	CacheWrite  int `json:"cacheWrite"`
+	TotalTokens int `json:"totalTokens"`
+}
+
 type Message struct {
 	Role    string      `json:"role"`
 	Content interface{} `json:"content"`
+	Usage   *Usage      `json:"usage"`
 }
 
 type LogEntry struct {
@@ -255,6 +264,20 @@ func extractToolResults(content interface{}) []string {
 	return results
 }
 
+func formatNumber(n int) string {
+	if n >= 1000 {
+		return fmt.Sprintf("%.1fk", float64(n)/1000)
+	}
+	return fmt.Sprintf("%d", n)
+}
+
+func formatTokenUsage(usage *Usage) string {
+	if usage == nil || usage.Input == 0 && usage.Output == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" %stokens: %s in / %s out%s", dim, formatNumber(usage.Input), formatNumber(usage.Output), reset)
+}
+
 func formatTimestamp(entry *LogEntry) string {
 	var ts interface{}
 	if entry.TS != nil {
@@ -279,24 +302,30 @@ func formatTimestamp(entry *LogEntry) string {
 	}
 }
 
-func processLine(line string) string {
+type ProcessedLine struct {
+	Output string
+	Usage  *Usage
+}
+
+func processLine(line string) ProcessedLine {
 	line = strings.TrimSpace(line)
 	if line == "" {
-		return ""
+		return ProcessedLine{}
 	}
 
 	var entry LogEntry
 	if err := json.Unmarshal([]byte(line), &entry); err != nil {
-		return ""
+		return ProcessedLine{}
 	}
 
 	if entry.Message.Role == "" {
-		return ""
+		return ProcessedLine{}
 	}
 
 	role := entry.Message.Role
 	content := entry.Message.Content
 	ts := formatTimestamp(&entry)
+	usage := entry.Message.Usage
 
 	switch role {
 	case "user":
@@ -305,37 +334,47 @@ func processLine(line string) string {
 			if len(text) > 500 {
 				text = text[:200] + fmt.Sprintf("\n  %s… (%d chars)%s", dim, len(text), reset)
 			}
-			return fmt.Sprintf("\n%s%s━━━ You%s ━━━%s\n%s%s%s", cyan, bold, ts, reset, cyan, text, reset)
+			return ProcessedLine{
+				Output: fmt.Sprintf("\n%s%s━━━ You%s ━━━%s\n%s%s%s", cyan, bold, ts, reset, cyan, text, reset),
+			}
 		}
 
 	case "assistant":
 		var parts []string
 		text := extractText(content)
+		tokens := formatTokenUsage(usage)
 		if strings.TrimSpace(text) != "" {
-			parts = append(parts, fmt.Sprintf("\n%s%s━━━ Agent%s ━━━%s\n%s%s%s", green, bold, ts, reset, green, text, reset))
+			parts = append(parts, fmt.Sprintf("\n%s%s━━━ Agent%s%s ━━━%s\n%s%s%s", green, bold, ts, tokens, reset, green, text, reset))
 		}
 		toolCalls := extractToolCalls(content)
 		if len(toolCalls) > 0 {
 			if len(parts) == 0 {
-				parts = append(parts, fmt.Sprintf("\n%s%s━━━ Agent%s ━━━%s", green, bold, ts, reset))
+				parts = append(parts, fmt.Sprintf("\n%s%s━━━ Agent%s%s ━━━%s", green, bold, ts, tokens, reset))
 			}
 			parts = append(parts, toolCalls...)
 		}
 		if len(parts) > 0 {
-			return strings.Join(parts, "\n")
+			return ProcessedLine{
+				Output: strings.Join(parts, "\n"),
+				Usage:  usage,
+			}
 		}
 
 	case "tool":
 		results := extractToolResults(content)
 		if len(results) > 0 {
-			return strings.Join(results, "\n")
+			return ProcessedLine{
+				Output: strings.Join(results, "\n"),
+			}
 		}
 		text := extractText(content)
 		if strings.TrimSpace(text) != "" {
 			if len(text) > 300 {
 				text = text[:297] + "…"
 			}
-			return fmt.Sprintf("  %s→ %s%s", dim, text, reset)
+			return ProcessedLine{
+				Output: fmt.Sprintf("  %s→ %s%s", dim, text, reset),
+			}
 		}
 
 	case "system":
@@ -344,11 +383,13 @@ func processLine(line string) string {
 			if len(text) > 200 {
 				text = text[:197] + "…"
 			}
-			return fmt.Sprintf("\n%s%s[system]%s %s%s", blue, dim, ts, text, reset)
+			return ProcessedLine{
+				Output: fmt.Sprintf("\n%s%s[system]%s %s%s", blue, dim, ts, text, reset),
+			}
 		}
 	}
 
-	return ""
+	return ProcessedLine{}
 }
 
 func streamFile(filepath string, follow bool, tail int) {
@@ -379,19 +420,31 @@ func streamFile(filepath string, follow bool, tail int) {
 		lines = append(lines, scanner.Text())
 	}
 
+	// Track token usage
+	var totalInput, totalOutput int
+
 	// Print tail
 	start := 0
 	if follow && len(lines) > tail {
 		start = len(lines) - tail
 	}
 	for _, line := range lines[start:] {
-		output := processLine(line)
-		if output != "" {
-			fmt.Println(output)
+		result := processLine(line)
+		if result.Output != "" {
+			fmt.Println(result.Output)
+		}
+		if result.Usage != nil {
+			totalInput += result.Usage.Input
+			totalOutput += result.Usage.Output
 		}
 	}
 
 	if !follow {
+		// Show total when dumping
+		if totalInput > 0 || totalOutput > 0 {
+			fmt.Printf("\n%s%s%s\n", dim, strings.Repeat("─", 60), reset)
+			fmt.Printf("%sTotal tokens: %s in / %s out%s\n", dim, formatNumber(totalInput), formatNumber(totalOutput), reset)
+		}
 		return
 	}
 
@@ -405,9 +458,13 @@ func streamFile(filepath string, follow bool, tail int) {
 		if err != nil {
 			break
 		}
-		output := processLine(line)
-		if output != "" {
-			fmt.Println(output)
+		result := processLine(line)
+		if result.Output != "" {
+			fmt.Println(result.Output)
+		}
+		if result.Usage != nil {
+			totalInput += result.Usage.Input
+			totalOutput += result.Usage.Output
 		}
 	}
 }
