@@ -1,6 +1,6 @@
 # session-stream
 
-A terminal viewer for [OpenClaw](https://github.com/openclaw/openclaw) session logs. Tails JSONL session files with color-coded roles, tool calls, and timestamps.
+A terminal viewer for [OpenClaw](https://github.com/openclaw/openclaw) and [inber](https://github.com/inberlab/inber) session logs. Tails JSONL session files with color-coded roles, tool calls, and timestamps. Auto-detects log format.
 
 ## Install
 
@@ -35,16 +35,22 @@ session-stream ~/.openclaw/agents/main/sessions/abc123.jsonl
 
 # Dump last 50 messages and exit
 session-stream -n 50 --no-follow
+
+# Show request entries (inber format)
+session-stream --verbose
+session-stream -v
 ```
 
 ## What it shows
 
 - **User messages** in cyan
-- **Assistant messages** in green
+- **Assistant messages** in green with token counts and costs
 - **Tool calls** with ⚡ in magenta
-- **Tool results** dimmed
+- **Tool results** dimmed (with line/byte counts or ✗ for errors)
+- **Thinking blocks** with 💭 in yellow (inber format)
 - **System messages** in blue
-- Timestamps when available
+- **Request entries** (inber format, shown with `--verbose`)
+- Timestamps formatted appropriately for each format
 
 ## Environment
 
