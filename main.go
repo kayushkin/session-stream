@@ -56,10 +56,27 @@ type Message struct {
 }
 
 type LogEntry struct {
+	// OpenClaw format
 	Message   Message     `json:"message"`
 	Timestamp interface{} `json:"timestamp"`
-	TS        interface{} `json:"ts"`
+	
+	// Inber format (flat structure)
+	Role       string                 `json:"role"`
+	Content    interface{}            `json:"content"`
+	TS         string                 `json:"ts"`
+	Model      string                 `json:"model"`
+	InTokens   int                    `json:"in_tokens"`
+	OutTokens  int                    `json:"out_tokens"`
+	CostUSD    float64                `json:"cost_usd"`
+	ToolID     string                 `json:"tool_id"`
+	ToolName   string                 `json:"tool_name"`
+	ToolInput  map[string]interface{} `json:"tool_input"`
+	IsError    bool                   `json:"is_error"`
+	Request    map[string]interface{} `json:"request"`
 }
+
+// Global verbose flag
+var verboseMode bool
 
 type ContentBlock struct {
 	Type      string                 `json:"type"`
@@ -300,7 +317,7 @@ func formatTokenUsage(usage *Usage) string {
 
 func formatTimestamp(entry *LogEntry) string {
 	var ts interface{}
-	if entry.TS != nil {
+	if entry.TS != "" {
 		ts = entry.TS
 	} else if entry.Timestamp != nil {
 		ts = entry.Timestamp
@@ -327,6 +344,43 @@ type ProcessedLine struct {
 	Usage  *Usage
 }
 
+// normalizeEntry converts an inber format entry to OpenClaw Message format
+func normalizeEntry(entry *LogEntry) (string, interface{}, *Usage, interface{}) {
+	// Check if this is inber format (has role at top level)
+	if entry.Role != "" && entry.Message.Role == "" {
+		// Inber format
+		role := entry.Role
+		content := entry.Content
+		ts := entry.TS
+		
+		// Build usage from inber fields
+		var usage *Usage
+		if entry.InTokens > 0 || entry.OutTokens > 0 {
+			usage = &Usage{
+				Input:       entry.InTokens,
+				Output:      entry.OutTokens,
+				TotalTokens: entry.InTokens,
+			}
+			if entry.CostUSD > 0 {
+				usage.Cost = &Cost{
+					Total: entry.CostUSD,
+				}
+			}
+		}
+		
+		return role, content, usage, ts
+	}
+	
+	// OpenClaw format
+	var ts interface{}
+	if entry.TS != "" {
+		ts = entry.TS
+	} else if entry.Timestamp != nil {
+		ts = entry.Timestamp
+	}
+	return entry.Message.Role, entry.Message.Content, entry.Message.Usage, ts
+}
+
 func processLine(line string) ProcessedLine {
 	line = strings.TrimSpace(line)
 	if line == "" {
@@ -338,16 +392,109 @@ func processLine(line string) ProcessedLine {
 		return ProcessedLine{}
 	}
 
-	if entry.Message.Role == "" {
+	role, content, usage, tsValue := normalizeEntry(&entry)
+	
+	if role == "" {
 		return ProcessedLine{}
 	}
 
-	role := entry.Message.Role
-	content := entry.Message.Content
-	ts := formatTimestamp(&entry)
-	usage := entry.Message.Usage
+	// Format timestamp
+	ts := ""
+	switch v := tsValue.(type) {
+	case string:
+		if v != "" {
+			// Try parsing as RFC3339 first (inber format)
+			if t, err := time.Parse(time.RFC3339Nano, v); err == nil {
+				ts = fmt.Sprintf(" %s%s%s", dim, t.Format("15:04:05"), reset)
+			} else if t, err := time.Parse(time.RFC3339, v); err == nil {
+				ts = fmt.Sprintf(" %s%s%s", dim, t.Format("15:04:05"), reset)
+			} else {
+				ts = fmt.Sprintf(" %s%s%s", dim, v, reset)
+			}
+		}
+	case float64:
+		// Unix timestamp (OpenClaw format)
+		t := v
+		if t > 1e12 {
+			t = t / 1000
+		}
+		ts = fmt.Sprintf(" %s%s%s", dim, time.Unix(int64(t), 0).Format("15:04:05"), reset)
+	}
 
 	switch role {
+	case "request":
+		// Inber format: full API request payload
+		// Skip by default unless verbose mode is enabled
+		if verboseMode {
+			return ProcessedLine{
+				Output: fmt.Sprintf("\n%s%s[request]%s%s%s", blue, dim, ts, reset, ""),
+			}
+		}
+		return ProcessedLine{}
+	
+	case "thinking":
+		// Inber format: reasoning text
+		text := extractText(content)
+		if text != "" {
+			if len(text) > 500 {
+				text = text[:200] + fmt.Sprintf("\n  %s… (%d chars)%s", dim, len(text), reset)
+			}
+			return ProcessedLine{
+				Output: fmt.Sprintf("\n%s%s💭 Thinking%s ━━━%s\n%s%s%s", yellow, bold, ts, reset, dim, text, reset),
+			}
+		}
+	
+	case "tool_call":
+		// Inber format: individual tool call
+		name := entry.ToolName
+		if name == "" {
+			name = "?"
+		}
+		
+		argsStr := ""
+		if len(entry.ToolInput) > 0 {
+			var summary []string
+			for k, v := range entry.ToolInput {
+				vStr := fmt.Sprintf("%v", v)
+				if len(vStr) > 80 {
+					vStr = vStr[:77] + "…"
+				}
+				summary = append(summary, fmt.Sprintf("%s=%s", k, vStr))
+			}
+			argsStr = strings.Join(summary, ", ")
+		}
+		
+		return ProcessedLine{
+			Output: fmt.Sprintf("  %s⚡ %s%s(%s%s%s)", magenta, name, reset, dim, argsStr, reset),
+		}
+	
+	case "tool_result":
+		// Inber format: individual tool result
+		text := extractText(content)
+		if entry.IsError {
+			if len(text) > 300 {
+				text = text[:297] + "…"
+			}
+			return ProcessedLine{
+				Output: fmt.Sprintf("  %s✗ %s%s", red, text, reset),
+			}
+		}
+		
+		// Count lines/bytes for non-error results
+		lineCount := strings.Count(text, "\n") + 1
+		byteCount := len(text)
+		if byteCount > 0 {
+			if lineCount == 1 && byteCount < 100 {
+				return ProcessedLine{
+					Output: fmt.Sprintf("  %s→ %s%s", dim, text, reset),
+				}
+			}
+			return ProcessedLine{
+				Output: fmt.Sprintf("  %s→ %d lines, %d bytes%s", dim, lineCount, byteCount, reset),
+			}
+		}
+		return ProcessedLine{}
+
 	case "user":
 		text := extractText(content)
 		if text != "" && !strings.HasPrefix(text, "Read HEARTBEAT") {
@@ -557,9 +704,11 @@ func main() {
 	flag.BoolVar(list, "l", false, "List agents or sessions (shorthand)")
 	noFollow := flag.Bool("no-follow", false, "Dump and exit")
 	n := flag.Int("n", defaultTail, "Number of recent messages to show")
+	verbose := flag.Bool("verbose", false, "Show request entries (inber format)")
+	flag.BoolVar(verbose, "v", false, "Show request entries (shorthand)")
 
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Stream OpenClaw session logs in a readable format.\n\n")
+		fmt.Fprintf(os.Stderr, "Stream OpenClaw and inber session logs in a readable format.\n\n")
 		fmt.Fprintf(os.Stderr, "Usage:\n")
 		fmt.Fprintf(os.Stderr, "  session-stream                        # latest session for default agent (main)\n")
 		fmt.Fprintf(os.Stderr, "  session-stream --agent argraphments   # latest session for a specific agent\n")
@@ -568,11 +717,15 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  session-stream <path>.jsonl           # stream a specific file\n")
 		fmt.Fprintf(os.Stderr, "  session-stream --no-follow            # dump and exit (no tail)\n")
 		fmt.Fprintf(os.Stderr, "  session-stream -n 50                  # show last N messages instead of default 20\n")
+		fmt.Fprintf(os.Stderr, "  session-stream --verbose              # show request entries (inber format)\n")
 		fmt.Fprintf(os.Stderr, "\nOptions:\n")
 		flag.PrintDefaults()
 	}
 
 	flag.Parse()
+	
+	// Set global verbose flag
+	verboseMode = *verbose
 
 	if *list {
 		if *agent != defaultAgent {

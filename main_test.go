@@ -526,6 +526,165 @@ func TestProcessLineWithToolResults(t *testing.T) {
 	}
 }
 
+func TestInberFormatUser(t *testing.T) {
+	jsonl := `{"ts":"2024-02-24T10:30:00Z","role":"user","content":"Hello, how are you?"}`
+	
+	result := processLine(jsonl)
+	
+	if result.Output == "" {
+		t.Fatal("Expected output for inber user message")
+	}
+	
+	if !strings.Contains(result.Output, "Hello, how are you?") {
+		t.Error("Expected output to contain user message")
+	}
+}
+
+func TestInberFormatAssistant(t *testing.T) {
+	jsonl := `{"ts":"2024-02-24T10:30:01Z","role":"assistant","content":"I'm doing well!","model":"claude-sonnet-4","in_tokens":100,"out_tokens":20,"cost_usd":0.0123}`
+	
+	result := processLine(jsonl)
+	
+	if result.Output == "" {
+		t.Fatal("Expected output for inber assistant message")
+	}
+	
+	if !strings.Contains(result.Output, "I'm doing well!") {
+		t.Error("Expected output to contain assistant message")
+	}
+	
+	if result.Usage == nil {
+		t.Fatal("Expected usage data")
+	}
+	
+	if result.Usage.Input != 100 {
+		t.Errorf("Expected input=100, got %d", result.Usage.Input)
+	}
+	
+	if result.Usage.Output != 20 {
+		t.Errorf("Expected output=20, got %d", result.Usage.Output)
+	}
+	
+	if result.Usage.Cost == nil || result.Usage.Cost.Total != 0.0123 {
+		t.Errorf("Expected cost=0.0123, got %v", result.Usage.Cost)
+	}
+}
+
+func TestInberFormatThinking(t *testing.T) {
+	jsonl := `{"ts":"2024-02-24T10:30:02Z","role":"thinking","content":"Let me think about this..."}`
+	
+	result := processLine(jsonl)
+	
+	if result.Output == "" {
+		t.Fatal("Expected output for inber thinking message")
+	}
+	
+	if !strings.Contains(result.Output, "💭") {
+		t.Error("Expected output to contain thinking emoji")
+	}
+	
+	if !strings.Contains(result.Output, "Let me think about this...") {
+		t.Error("Expected output to contain thinking content")
+	}
+}
+
+func TestInberFormatToolCall(t *testing.T) {
+	jsonl := `{"ts":"2024-02-24T10:30:03Z","role":"tool_call","tool_id":"call_123","tool_name":"shell","tool_input":{"command":"ls -la"}}`
+	
+	result := processLine(jsonl)
+	
+	if result.Output == "" {
+		t.Fatal("Expected output for inber tool call")
+	}
+	
+	if !strings.Contains(result.Output, "⚡") {
+		t.Error("Expected output to contain lightning emoji")
+	}
+	
+	if !strings.Contains(result.Output, "shell") {
+		t.Error("Expected output to contain tool name")
+	}
+	
+	if !strings.Contains(result.Output, "command") {
+		t.Error("Expected output to contain tool input summary")
+	}
+}
+
+func TestInberFormatToolResult(t *testing.T) {
+	jsonl := `{"ts":"2024-02-24T10:30:04Z","role":"tool_result","tool_id":"call_123","tool_name":"shell","content":"total 24\ndrwxr-xr-x 3 user user 4096","is_error":false}`
+	
+	result := processLine(jsonl)
+	
+	if result.Output == "" {
+		t.Fatal("Expected output for inber tool result")
+	}
+	
+	if !strings.Contains(result.Output, "→") {
+		t.Error("Expected output to contain arrow symbol")
+	}
+}
+
+func TestInberFormatToolResultError(t *testing.T) {
+	jsonl := `{"ts":"2024-02-24T10:30:04Z","role":"tool_result","tool_id":"call_123","tool_name":"shell","content":"command not found","is_error":true}`
+	
+	result := processLine(jsonl)
+	
+	if result.Output == "" {
+		t.Fatal("Expected output for inber tool result error")
+	}
+	
+	if !strings.Contains(result.Output, "✗") {
+		t.Error("Expected output to contain error symbol")
+	}
+	
+	if !strings.Contains(result.Output, "command not found") {
+		t.Error("Expected output to contain error message")
+	}
+}
+
+func TestInberFormatRequest(t *testing.T) {
+	// By default, request entries should be skipped
+	jsonl := `{"ts":"2024-02-24T10:30:05Z","role":"request","request":{"model":"claude-sonnet-4","messages":[]}}`
+	
+	verboseMode = false
+	result := processLine(jsonl)
+	
+	if result.Output != "" {
+		t.Error("Expected request entry to be skipped in non-verbose mode")
+	}
+	
+	// In verbose mode, request entries should be shown
+	verboseMode = true
+	result = processLine(jsonl)
+	verboseMode = false // Reset
+	
+	if result.Output == "" {
+		t.Fatal("Expected output for request entry in verbose mode")
+	}
+	
+	if !strings.Contains(result.Output, "[request]") {
+		t.Error("Expected output to contain [request] label")
+	}
+}
+
+func TestInberFormatSystem(t *testing.T) {
+	jsonl := `{"ts":"2024-02-24T10:30:06Z","role":"system","content":"session started — model: claude-sonnet-4"}`
+	
+	result := processLine(jsonl)
+	
+	if result.Output == "" {
+		t.Fatal("Expected output for inber system message")
+	}
+	
+	if !strings.Contains(result.Output, "[system]") {
+		t.Error("Expected output to contain [system] label")
+	}
+	
+	if !strings.Contains(result.Output, "session started") {
+		t.Error("Expected output to contain system message")
+	}
+}
+
 func TestProcessLineLargeJSONL(t *testing.T) {
 	// Test that we can handle JSONL lines larger than 64KB
 	// (the old bufio.Scanner default limit that was silently truncating)
